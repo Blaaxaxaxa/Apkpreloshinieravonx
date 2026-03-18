@@ -1,0 +1,2356 @@
+import telebot
+from telebot import types
+import sqlite3
+import time
+import random
+import threading
+from datetime import datetime, timedelta
+from flask import Flask
+from threading import Thread
+
+# --- KEEP ALIVE ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "RAVONX SYSTEM IS ONLINE"
+
+def run():
+    app.run(host='0.0.0.0', port=5000)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+# ------------------
+
+TOKEN = "8771313511:AAH7ZiErUx2SwzwEIMZSclGP1_E1A6nHsDI"
+ADMIN_ID = 6465381695
+CHAT_SUPPORT = "https://t.me/+yli41iR4xAc5ZWFi"
+REVIEWS_CHANNEL = None          # ID канала отзывов, например: -1001234567890
+SUBSCRIPTION_CHANNEL = -1003643790469  # ID канала для скидки 1%
+SUBSCRIPTION_CHANNEL_LINK = "https://t.me/ravonx"  # Ссылка на канал
+
+BOT_USERNAME = "RavonxMarketBot"
+
+bot = telebot.TeleBot(TOKEN)
+
+PAY_REQUISITES = {
+    "kaspi": "4400 4300 1354 6855",
+}
+
+DEFAULT_PRODUCTS = {
+    "soft1":  {"name": "🛠 DRIP CLIENT V1",    "price": 1500},
+    "soft2":  {"name": "🛠 DRIP CLIENT V2",    "price": 2500},
+    "soft3":  {"name": "🛠 EXTREME MOD MENU",  "price": 3500},
+    "boost1": {"name": "⚡️ FPS BOOSTER",       "price": 500}
+}
+
+pending_orders       = {}
+pending_ff_accounts  = {}
+pending_giveaway     = {}
+pending_product_edit = {}
+pending_ban_action      = {}
+pending_duration_edit   = {}
+
+maintenance_mode = False
+
+RULES_TEXT = """📜 *ПРАВИЛА RAVONX MARKET*
+
+*1. ОБЩИЕ ПОЛОЖЕНИЯ*
+1.1. Пользуясь ботом, вы автоматически соглашаетесь с данными правилами.
+1.2. Незнание правил не освобождает от ответственности и блокировки.
+1.3. Администрация имеет право изменить правила в любой момент без уведомления.
+
+*2. ОПЛАТА И ЗАКАЗЫ*
+2.1. Оплата принимается только на указанные реквизиты (Kaspi).
+2.2. После оплаты вы обязаны прислать верное Имя/Фамилию или скриншот чека.
+2.3. Попытка обмана (фейковый чек, старый скрин) — немедленный бан без права разблокировки.
+2.4. Скидка 1% за подписку действует только при наличии активной подписки на момент покупки.
+
+*3. ИСПОЛЬЗОВАНИЕ СОФТА*
+3.1. Весь софт предоставляется "как есть".
+3.2. Мы не несём ответственности за блокировки ваших игровых аккаунтов.
+3.3. Перепродажа или слив нашего софта третьим лицам запрещены.
+
+*4. ПОВЕДЕНИЕ И ЧЁРНЫЙ СПИСОК*
+4.1. Оскорбление администрации — БАН.
+4.2. Флуд, спам командами — БАН.
+4.3. Выпрашивание бесплатного софта — игнор или блокировка.
+4.4. Попытки взлома бота — вечный ЧС.
+
+*5. ВОЗВРАТ СРЕДСТВ*
+5.1. Возврат средств не осуществляется, если товар уже был выдан.
+5.2. Если софт не работает по вашей вине — возврата нет.
+
+🚫 *КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО:*
+
+*6. СПАМ И ФЛУД*
+6.1. Запрещено отправлять более 3-х бессмысленных сообщений подряд.
+6.2. Запрещено спамить кнопками бота.
+6.3. Наказание: временный мут или вечный ЧС.
+
+*7. ПОПРОШАЙНИЧЕСТВО*
+7.1. «Дай софт бесплатно», «Я блогер, дай за рекламу» — приравнивается к спаму.
+7.2. Мы не выдаём софт бесплатно.
+
+*8. РЕКЛАМА И ПИАР*
+8.1. Запрещена реклама сторонних каналов, чатов или ботов.
+8.2. Наказание: мгновенный вечный ЧС.
+
+*9. ПЕРЕПРОДАЖА*
+9.1. Попытка перепродать наш софт — деактивация копии и ЧС."""
+
+# ===================== РОЛИ =====================
+
+def get_premium_role(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT premium_role FROM users WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_premium_role(user_id, role):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET premium_role=? WHERE user_id=?', (role, user_id))
+    conn.commit()
+    conn.close()
+
+def get_user_role(user_id, purchases, lb_rank=None):
+    if user_id == ADMIN_ID:
+        return "👑 Владелец"
+    if lb_rank == 1:
+        return "🐉 LEGEND"
+    elif lb_rank == 2:
+        return "🌌 MYTHIC"
+    elif lb_rank == 3:
+        return "⚡ IMMORTAL"
+    premium = get_premium_role(user_id)
+    if premium == 'elite':
+        return "👑 ELITE"
+    elif premium == 'premium':
+        return "🚀 PREMIUM"
+    elif premium == 'vip':
+        return "💎 VIP"
+    if purchases >= 30:
+        return "🧠 Эксперт"
+    elif purchases >= 25:
+        return "💠 Продвинутый"
+    elif purchases >= 15:
+        return "🔥 Профи"
+    elif purchases >= 10:
+        return "⭐ Активный"
+    elif purchases >= 5:
+        return "🙂 Пользователь"
+    else:
+        return "👶 Новичок"
+
+# Оставляем для совместимости со старым кодом в списке пользователей
+def get_cyber_rank(purchases):
+    return get_user_role(0, purchases)
+
+# ===================== БАЗА ДАННЫХ =====================
+
+def init_db():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            language_code TEXT,
+            is_bot INTEGER,
+            first_seen TEXT,
+            last_seen TEXT,
+            visits INTEGER DEFAULT 1,
+            referrer_id INTEGER,
+            referral_count INTEGER DEFAULT 0,
+            is_banned INTEGER DEFAULT 0
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            item_id TEXT,
+            item_name TEXT,
+            price INTEGER,
+            date TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS ff_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            login TEXT,
+            password TEXT,
+            description TEXT,
+            price INTEGER DEFAULT 0,
+            currency TEXT DEFAULT 'KZT',
+            is_sold INTEGER DEFAULT 0,
+            buyer_id INTEGER,
+            added_at TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            item_name TEXT,
+            review_text TEXT,
+            date TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS giveaways (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT,
+            end_time TEXT,
+            is_finished INTEGER DEFAULT 0,
+            winner_id INTEGER
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS giveaway_participants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            giveaway_id INTEGER,
+            user_id INTEGER,
+            UNIQUE(giveaway_id, user_id)
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT UNIQUE,
+            name TEXT,
+            price INTEGER
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS product_durations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_key TEXT,
+            label TEXT,
+            price INTEGER
+        )
+    ''')
+
+    for sql in [
+        'ALTER TABLE ff_accounts ADD COLUMN price INTEGER DEFAULT 0',
+        'ALTER TABLE ff_accounts ADD COLUMN currency TEXT DEFAULT "KZT"',
+        'ALTER TABLE users ADD COLUMN referrer_id INTEGER',
+        'ALTER TABLE users ADD COLUMN referral_count INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN sub_discount_used INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN sub_verified INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN premium_role TEXT DEFAULT NULL',
+        'ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0',
+        'ALTER TABLE product_durations ADD COLUMN sort_order INTEGER DEFAULT 0',
+    ]:
+        try:
+            c.execute(sql)
+        except Exception:
+            pass
+
+    # Инициализируем sort_order для products (расставляем уникальные значения по id)
+    c.execute('UPDATE products SET sort_order=id WHERE sort_order=0 OR sort_order IS NULL')
+    # Исправляем дубликаты sort_order в products (пронумеровываем заново)
+    dup_rows = c.execute('SELECT id FROM products ORDER BY sort_order, id').fetchall()
+    for i, (pid,) in enumerate(dup_rows, start=1):
+        c.execute('UPDATE products SET sort_order=? WHERE id=? AND sort_order!=?', (i, pid, i))
+    # Инициализируем sort_order для product_durations
+    c.execute('UPDATE product_durations SET sort_order=id WHERE sort_order=0 OR sort_order IS NULL')
+    # Исправляем дубликаты sort_order в product_durations
+    dup_dur = c.execute('SELECT id FROM product_durations ORDER BY sort_order, id').fetchall()
+    for i, (did,) in enumerate(dup_dur, start=1):
+        c.execute('UPDATE product_durations SET sort_order=? WHERE id=? AND sort_order!=?', (i, did, i))
+
+    # Сидируем таблицу products если пустая
+    existing = c.execute('SELECT COUNT(*) FROM products').fetchone()[0]
+    if existing == 0:
+        for key, info in DEFAULT_PRODUCTS.items():
+            c.execute('INSERT OR IGNORE INTO products (key, name, price) VALUES (?,?,?)',
+                      (key, info['name'], info['price']))
+
+    conn.commit()
+    conn.close()
+
+# ---- Продукты из БД ----
+
+def get_products():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute('SELECT key, name, price FROM products ORDER BY sort_order, id').fetchall()
+    conn.close()
+    return {row[0]: {"name": row[1], "price": row[2]} for row in rows}
+
+def get_products_list():
+    """Возвращает список [(key, name, price, sort_order)] для перестановки"""
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute('SELECT key, name, price, sort_order FROM products ORDER BY sort_order, id').fetchall()
+    conn.close()
+    return rows
+
+def swap_product_order(key1, key2):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    # Нормализуем sort_order перед свапом — исправляем дубликаты
+    all_rows = c.execute('SELECT id FROM products ORDER BY sort_order, id').fetchall()
+    for i, (pid,) in enumerate(all_rows, start=1):
+        c.execute('UPDATE products SET sort_order=? WHERE id=?', (i, pid))
+    s1 = c.execute('SELECT sort_order FROM products WHERE key=?', (key1,)).fetchone()
+    s2 = c.execute('SELECT sort_order FROM products WHERE key=?', (key2,)).fetchone()
+    if s1 and s2 and s1[0] != s2[0]:
+        c.execute('UPDATE products SET sort_order=? WHERE key=?', (s2[0], key1))
+        c.execute('UPDATE products SET sort_order=? WHERE key=?', (s1[0], key2))
+    conn.commit()
+    conn.close()
+
+def get_product(key):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT name, price FROM products WHERE key=?', (key,)).fetchone()
+    conn.close()
+    return {"name": row[0], "price": row[1]} if row else None
+
+def update_product_name(key, name):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE products SET name=? WHERE key=?', (name, key))
+    conn.commit()
+    conn.close()
+
+def update_product_price(key, price):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE products SET price=? WHERE key=?', (price, key))
+    conn.commit()
+    conn.close()
+
+def add_product_to_db(key, name, price):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    max_order = c.execute('SELECT COALESCE(MAX(sort_order), 0) FROM products').fetchone()[0]
+    c.execute('INSERT OR REPLACE INTO products (key, name, price, sort_order) VALUES (?,?,?,?)',
+              (key, name, price, max_order + 1))
+    conn.commit()
+    conn.close()
+
+# ---- Сроки товаров ----
+
+def get_product_durations(product_key):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute(
+        'SELECT id, label, price FROM product_durations WHERE product_key=? ORDER BY sort_order, id',
+        (product_key,)
+    ).fetchall()
+    conn.close()
+    return rows  # [(id, label, price), ...]
+
+def swap_duration_order(id1, id2):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    # Нормализуем sort_order в рамках одного товара перед свапом
+    row1 = c.execute('SELECT product_key FROM product_durations WHERE id=?', (id1,)).fetchone()
+    if row1:
+        all_dur = c.execute(
+            'SELECT id FROM product_durations WHERE product_key=? ORDER BY sort_order, id',
+            (row1[0],)
+        ).fetchall()
+        for i, (did,) in enumerate(all_dur, start=1):
+            c.execute('UPDATE product_durations SET sort_order=? WHERE id=?', (i, did))
+    s1 = c.execute('SELECT sort_order FROM product_durations WHERE id=?', (id1,)).fetchone()
+    s2 = c.execute('SELECT sort_order FROM product_durations WHERE id=?', (id2,)).fetchone()
+    if s1 and s2 and s1[0] != s2[0]:
+        c.execute('UPDATE product_durations SET sort_order=? WHERE id=?', (s2[0], id1))
+        c.execute('UPDATE product_durations SET sort_order=? WHERE id=?', (s1[0], id2))
+    conn.commit()
+    conn.close()
+
+def get_duration_by_id(dur_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute(
+        'SELECT id, product_key, label, price FROM product_durations WHERE id=?',
+        (dur_id,)
+    ).fetchone()
+    conn.close()
+    return row  # (id, product_key, label, price)
+
+def add_product_duration(product_key, label, price):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    max_order = c.execute(
+        'SELECT COALESCE(MAX(sort_order), 0) FROM product_durations WHERE product_key=?',
+        (product_key,)
+    ).fetchone()[0]
+    c.execute(
+        'INSERT INTO product_durations (product_key, label, price, sort_order) VALUES (?,?,?,?)',
+        (product_key, label, price, max_order + 1)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_product_duration(dur_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM product_durations WHERE id=?', (dur_id,))
+    conn.commit()
+    conn.close()
+
+def update_duration_label(dur_id, label):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE product_durations SET label=? WHERE id=?', (label, dur_id))
+    conn.commit()
+    conn.close()
+
+def update_duration_price(dur_id, price):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE product_durations SET price=? WHERE id=?', (price, dur_id))
+    conn.commit()
+    conn.close()
+
+# ---- Пользователи ----
+
+def save_user(user, referrer_id=None):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    existing = c.execute('SELECT id, visits FROM users WHERE user_id = ?', (user.id,)).fetchone()
+    if existing:
+        c.execute('''
+            UPDATE users SET username=?, first_name=?, last_name=?, language_code=?,
+            last_seen=?, visits=? WHERE user_id=?
+        ''', (user.username, user.first_name, user.last_name,
+              user.language_code, now, existing[1] + 1, user.id))
+    else:
+        c.execute('''
+            INSERT INTO users (user_id, username, first_name, last_name, language_code, is_bot,
+                               first_seen, last_seen, visits, referrer_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        ''', (user.id, user.username, user.first_name, user.last_name,
+              user.language_code, int(user.is_bot), now, now, referrer_id))
+        if referrer_id and referrer_id != user.id:
+            c.execute('UPDATE users SET referral_count = referral_count + 1 WHERE user_id=?', (referrer_id,))
+    conn.commit()
+    conn.close()
+
+def is_user_banned(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT is_banned FROM users WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+    return bool(row and row[0] == 1)
+
+def ban_user(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET is_banned=1 WHERE user_id=?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def unban_user(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET is_banned=0 WHERE user_id=?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def has_used_sub_discount(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT sub_discount_used FROM users WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+    return bool(row and row[0] == 1)
+
+def mark_sub_discount_used(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET sub_discount_used=1 WHERE user_id=?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def has_sub_verified(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT sub_verified FROM users WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+    return bool(row and row[0] == 1)
+
+def mark_sub_verified(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET sub_verified=1 WHERE user_id=?', (user_id,))
+    conn.commit()
+    conn.close()
+
+# ---- Заказы ----
+
+def save_order(user_id, item_id, item_name, price):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute('INSERT INTO orders (user_id, item_id, item_name, price, date) VALUES (?,?,?,?,?)',
+              (user_id, item_id, item_name, price, now))
+    conn.commit()
+    conn.close()
+
+def get_all_users():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute(
+        'SELECT user_id, username, first_name, last_name, first_seen, last_seen, visits, is_banned FROM users ORDER BY first_seen DESC'
+    ).fetchall()
+    conn.close()
+    return rows
+
+def get_users_count():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    count = c.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+    conn.close()
+    return count
+
+def get_total_orders():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    cnt = c.execute('SELECT COUNT(*) FROM orders').fetchone()[0]
+    conn.close()
+    return cnt
+
+def get_user_order_count(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    cnt = c.execute('SELECT COUNT(*) FROM orders WHERE user_id=?', (user_id,)).fetchone()[0]
+    conn.close()
+    return cnt
+
+def get_user_orders(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute(
+        'SELECT item_name, price, date FROM orders WHERE user_id=? ORDER BY date DESC LIMIT 20',
+        (user_id,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def get_user_referral_info(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT referral_count, referrer_id FROM users WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+    return row if row else (0, None)
+
+def get_referrer_id_of(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT referrer_id FROM users WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
+def get_leaderboard():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute('''
+        SELECT o.user_id, u.username, u.first_name, COUNT(o.id) as cnt, SUM(o.price) as total
+        FROM orders o
+        LEFT JOIN users u ON u.user_id = o.user_id
+        GROUP BY o.user_id
+        ORDER BY cnt DESC, total DESC
+        LIMIT 10
+    ''').fetchall()
+    conn.close()
+    return rows
+
+def get_user_rank(user_id):
+    lb = get_leaderboard()
+    for i, row in enumerate(lb):
+        if row[0] == user_id:
+            return i + 1
+    return None
+
+# ---- Скидки ----
+
+def check_subscription(user_id):
+    if not SUBSCRIPTION_CHANNEL:
+        return False
+    try:
+        member = bot.get_chat_member(SUBSCRIPTION_CHANNEL, user_id)
+        return member.status in ('member', 'administrator', 'creator')
+    except Exception:
+        return False
+
+def check_sub_eligibility(user_id):
+    """
+    Возвращает (subscribed: bool, hours_ok: bool, hours_left_minutes: int)
+    """
+    subscribed = check_subscription(user_id)
+    first_seen_str = get_user_first_seen(user_id)
+    if first_seen_str:
+        try:
+            first_seen_dt = datetime.strptime(first_seen_str, "%Y-%m-%d %H:%M:%S")
+            elapsed = datetime.now() - first_seen_dt
+            hours_ok = elapsed.total_seconds() >= 7200  # 2 часа
+            minutes_left = max(0, int((7200 - elapsed.total_seconds()) / 60))
+        except Exception:
+            hours_ok = False
+            minutes_left = 120
+    else:
+        hours_ok = False
+        minutes_left = 120
+    return subscribed, hours_ok, minutes_left
+
+def get_discount_breakdown(user_id):
+    rank = get_user_rank(user_id)
+    top_disc = (11 - rank) if rank else 0
+    if has_used_sub_discount(user_id):
+        sub_disc = 0
+    else:
+        sub_disc = 1 if check_subscription(user_id) else 0
+    total = top_disc + sub_disc
+    return top_disc, sub_disc, total, rank
+
+# ---- Отзывы ----
+
+def save_review(user_id, username, item_name, review_text):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute('INSERT INTO reviews (user_id, username, item_name, review_text, date) VALUES (?,?,?,?,?)',
+              (user_id, username, item_name, review_text, now))
+    conn.commit()
+    conn.close()
+
+def get_all_reviews():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute(
+        'SELECT username, item_name, review_text, date FROM reviews ORDER BY date DESC LIMIT 20'
+    ).fetchall()
+    conn.close()
+    return rows
+
+# ---- FF аккаунты ----
+
+def add_ff_account(login, password, description="", price=0, currency="KZT"):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute('INSERT INTO ff_accounts (login, password, description, price, currency, added_at) VALUES (?,?,?,?,?,?)',
+              (login, password, description, price, currency, now))
+    conn.commit()
+    conn.close()
+
+def get_available_ff_accounts():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute('SELECT id, login, description, price, currency FROM ff_accounts WHERE is_sold=0').fetchall()
+    conn.close()
+    return rows
+
+def get_ff_account_by_id(acc_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute(
+        'SELECT id, login, password, description, price, currency FROM ff_accounts WHERE id=? AND is_sold=0',
+        (acc_id,)
+    ).fetchone()
+    conn.close()
+    return row
+
+def mark_ff_account_sold(acc_id, buyer_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE ff_accounts SET is_sold=1, buyer_id=? WHERE id=?', (buyer_id, acc_id))
+    conn.commit()
+    conn.close()
+
+def get_ff_accounts_count():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    total = c.execute('SELECT COUNT(*) FROM ff_accounts').fetchone()[0]
+    avail = c.execute('SELECT COUNT(*) FROM ff_accounts WHERE is_sold=0').fetchone()[0]
+    conn.close()
+    return total, avail
+
+# ---- Розыгрыши ----
+
+def create_giveaway(text, end_time):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO giveaways (text, end_time) VALUES (?, ?)', (text, end_time))
+    gid = c.lastrowid
+    conn.commit()
+    conn.close()
+    return gid
+
+def join_giveaway(giveaway_id, user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO giveaway_participants (giveaway_id, user_id) VALUES (?, ?)', (giveaway_id, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        conn.close()
+        return False
+
+def get_active_giveaways():
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    rows = c.execute('SELECT id, text, end_time FROM giveaways WHERE is_finished=0').fetchall()
+    conn.close()
+    return rows
+
+def finish_giveaway(giveaway_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    participants = c.execute(
+        'SELECT user_id FROM giveaway_participants WHERE giveaway_id=?', (giveaway_id,)
+    ).fetchall()
+    if not participants:
+        c.execute('UPDATE giveaways SET is_finished=1 WHERE id=?', (giveaway_id,))
+        conn.commit()
+        conn.close()
+        return None, 0
+    winner_id = random.choice(participants)[0]
+    c.execute('UPDATE giveaways SET is_finished=1, winner_id=? WHERE id=?', (winner_id, giveaway_id))
+    conn.commit()
+    conn.close()
+    return winner_id, len(participants)
+
+def cancel_giveaway(giveaway_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE giveaways SET is_finished=1 WHERE id=?', (giveaway_id,))
+    conn.commit()
+    conn.close()
+
+def get_user_first_seen(user_id):
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    row = c.execute('SELECT first_seen FROM users WHERE user_id=?', (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+# ===================== ТАЙМЕР РОЗЫГРЫШЕЙ =====================
+
+def giveaway_checker():
+    while True:
+        try:
+            active = get_active_giveaways()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for giv in active:
+                gid, text, end_time = giv
+                if now >= end_time:
+                    winner_id, cnt = finish_giveaway(gid)
+                    if winner_id:
+                        conn = sqlite3.connect('bot_data.db')
+                        c = conn.cursor()
+                        row = c.execute('SELECT username, first_name FROM users WHERE user_id=?', (winner_id,)).fetchone()
+                        conn.close()
+                        uname = f"@{row[0]}" if (row and row[0]) else (row[1] if row else f"ID:{winner_id}")
+                        bot.send_message(
+                            ADMIN_ID,
+                            f"🎉 *РОЗЫГРЫШ ЗАВЕРШЁН!*\n\n📝 {text}\n\n"
+                            f"👥 Участников: *{cnt}*\n🏆 Победитель: *{uname}*\n🆔 ID: `{winner_id}`",
+                            parse_mode="Markdown"
+                        )
+                        try:
+                            bot.send_message(
+                                winner_id,
+                                f"🎉 *Ты выиграл в розыгрыше RAVONX!*\n\n"
+                                f"📝 {text}\n\n"
+                                f"🆔 Твой ID: `{winner_id}`\n\n"
+                                f"Напиши в поддержку и укажи свой ID — тебе выдадут приз!",
+                                reply_markup=types.InlineKeyboardMarkup().add(
+                                    types.InlineKeyboardButton("🆘 Поддержка", url=CHAT_SUPPORT)
+                                ),
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        bot.send_message(ADMIN_ID, f"🎉 Розыгрыш завершён, участников не было.\n📝 {text}")
+        except Exception as e:
+            print(f"[GIVEAWAY CHECKER ERROR] {e}")
+        time.sleep(30)
+
+# ===================== МЕНЮ =====================
+
+def main_menu():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("🚀 КУПИТЬ СОФТ / УСИЛИТЕЛЬ", callback_data="cat_mods"),
+        types.InlineKeyboardButton("🎮 АККАУНТЫ FREE FIRE", callback_data="cat_accs"),
+        types.InlineKeyboardButton("👤 МОЙ ПРОФИЛЬ", callback_data="my_profile"),
+        types.InlineKeyboardButton("📦 МОИ ПОКУПКИ", callback_data="my_purchases"),
+        types.InlineKeyboardButton("📊 СТАТИСТИКА / ТОП", callback_data="client_stats"),
+        types.InlineKeyboardButton("📜 ПРАВИЛА", callback_data="show_rules"),
+        types.InlineKeyboardButton("🆘 ТЕХ.ПОДДЕРЖКА / ЧАТ", url=CHAT_SUPPORT)
+    )
+    return kb
+
+def admin_menu():
+    global maintenance_mode
+    total, avail = get_ff_accounts_count()
+    maint_label = "🔴 Выключить тех. работы" if maintenance_mode else "🔧 Включить тех. работы"
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("👥 Все пользователи", callback_data="adm_users"),
+        types.InlineKeyboardButton("📊 Статистика магазина", callback_data="adm_stats"),
+        types.InlineKeyboardButton("📢 Рассылка", callback_data="adm_broadcast"),
+        types.InlineKeyboardButton(f"🎮 Аккаунты FF ({avail} доступно)", callback_data="adm_ff_menu"),
+        types.InlineKeyboardButton("⭐ Отзывы", callback_data="adm_reviews"),
+        types.InlineKeyboardButton("🎉 Создать розыгрыш", callback_data="adm_giveaway"),
+        types.InlineKeyboardButton("❌ Отменить розыгрыш", callback_data="adm_cancel_giveaway"),
+        types.InlineKeyboardButton("🚫 Забанить / Разбанить по ID", callback_data="adm_ban_by_id"),
+        types.InlineKeyboardButton("💎 Выдать роль пользователю", callback_data="adm_give_role"),
+        types.InlineKeyboardButton("🛍 Товары (редактировать)", callback_data="adm_products"),
+        types.InlineKeyboardButton(maint_label, callback_data="adm_maintenance_toggle"),
+    )
+    return kb
+
+# ===================== КОМАНДЫ =====================
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    save_user(message.from_user)
+    if message.from_user.id != ADMIN_ID and maintenance_mode:
+        bot.send_message(
+            message.chat.id,
+            "🔧 *ТЕХНИЧЕСКИЕ РАБОТЫ*\n\n"
+            "Бот временно недоступен — проводятся технические работы.\n"
+            "Все активные заявки будут обработаны позже.\n\n"
+            "Приносим извинения за неудобства!",
+            parse_mode="Markdown"
+        )
+        return
+    if is_user_banned(message.from_user.id):
+        bot.send_message(message.chat.id, "🚫 Вы заблокированы в RAVONX MARKET за нарушение правил.")
+        return
+    args = message.text.split()
+    referrer_id = None
+    if len(args) > 1 and args[1].startswith('ref_'):
+        try:
+            rid = int(args[1].replace('ref_', ''))
+            if rid != message.from_user.id:
+                referrer_id = rid
+        except Exception:
+            pass
+    if referrer_id:
+        save_user(message.from_user, referrer_id=referrer_id)
+        try:
+            ref_name = message.from_user.first_name or "Новый пользователь"
+            bot.send_message(
+                referrer_id,
+                f"🎉 По твоей реф. ссылке зарегистрировался *{ref_name}*!\n"
+                f"Когда он совершит покупку — ты получишь уведомление.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    bot.send_message(message.chat.id, "🛑 *RAVONX MARKET SYSTEM*", reply_markup=main_menu(), parse_mode="Markdown")
+
+@bot.message_handler(commands=['adminsop'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    count = get_users_count()
+    total_orders = get_total_orders()
+    bot.send_message(
+        message.chat.id,
+        f"🔧 *АДМИН ПАНЕЛЬ*\n\n👥 Пользователей: *{count}*\n🛒 Заказов: *{total_orders}*",
+        reply_markup=admin_menu(),
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(commands=['ban'])
+def cmd_ban(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        bot.send_message(message.chat.id, "Использование: /ban ID")
+        return
+    uid = int(parts[1])
+    ban_user(uid)
+    bot.send_message(message.chat.id, f"🚫 Пользователь `{uid}` заблокирован.", parse_mode="Markdown")
+    try:
+        bot.send_message(uid, "🚫 Вы заблокированы в RAVONX MARKET за нарушение правил.")
+    except Exception:
+        pass
+
+@bot.message_handler(commands=['unban'])
+def cmd_unban(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        bot.send_message(message.chat.id, "Использование: /unban ID")
+        return
+    uid = int(parts[1])
+    unban_user(uid)
+    bot.send_message(message.chat.id, f"✅ Пользователь `{uid}` разблокирован.", parse_mode="Markdown")
+    try:
+        bot.send_message(uid, "✅ Вы разблокированы в RAVONX MARKET. Добро пожаловать обратно!")
+    except Exception:
+        pass
+
+# ===================== ВСЕ CALLBACK =====================
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_all_callbacks(call):
+    global maintenance_mode
+    chat_id = call.message.chat.id
+    msg_id  = call.message.message_id
+    user_id = call.from_user.id
+    data    = call.data
+
+    # Проверка техработ
+    if user_id != ADMIN_ID and maintenance_mode and not data.startswith("adm_"):
+        bot.answer_callback_query(
+            call.id,
+            "🔧 Бот на технических работах. Все заявки будут обработаны позже.",
+            show_alert=True
+        )
+        return
+
+    # Проверка бана для не-розыгрышных действий
+    if not data.startswith("giveaway_join_") and user_id != ADMIN_ID:
+        if is_user_banned(user_id):
+            bot.answer_callback_query(call.id, "🚫 Вы заблокированы в RAVONX MARKET.", show_alert=True)
+            return
+
+    # --------- ADMIN ONLY ---------
+    if user_id == ADMIN_ID and (data.startswith("adm_") or data.startswith("ff_currency") or data.startswith("adm_editfield_")):
+
+        if data == "adm_stats":
+            count = get_users_count()
+            total_orders = get_total_orders()
+            bot.edit_message_text(
+                f"📊 *СТАТИСТИКА МАГАЗИНА*\n\n👥 Пользователей: *{count}*\n🛒 Заказов: *{total_orders}*",
+                chat_id, msg_id,
+                reply_markup=types.InlineKeyboardMarkup().add(
+                    types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_back")
+                ),
+                parse_mode="Markdown"
+            )
+
+        elif data == "adm_users":
+            users = get_all_users()
+            if not users:
+                text = "👥 *ПОЛЬЗОВАТЕЛИ*\n\nПока никого нет."
+            else:
+                text = "👥 *ПОЛЬЗОВАТЕЛИ:*\n\n"
+                for u in users[:12]:
+                    uid, uname, fname, lname, first_seen, last_seen, visits, is_banned_flag = u
+                    name = f"{fname or ''} {lname or ''}".strip() or "—"
+                    un = f"@{uname}" if uname else "—"
+                    orders_cnt = get_user_order_count(uid)
+                    ban_mark = " 🚫БАН" if is_banned_flag else ""
+                    text += (
+                        f"🆔 `{uid}`{ban_mark}\n"
+                        f"👤 {name} | {un}\n"
+                        f"🎖 {get_cyber_rank(orders_cnt)} | 🛒 {orders_cnt}\n"
+                        f"{'—'*18}\n"
+                    )
+                if len(users) > 12:
+                    text += f"\n...и ещё {len(users) - 12}"
+            bot.edit_message_text(
+                text, chat_id, msg_id,
+                reply_markup=types.InlineKeyboardMarkup().add(
+                    types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_back")
+                ),
+                parse_mode="Markdown"
+            )
+
+        elif data == "adm_broadcast":
+            msg = bot.send_message(
+                chat_id,
+                "✍️ Отправь сообщение для рассылки:\n_(текст, фото, видео, документ)_\n_/cancel — отмена_",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, do_broadcast)
+
+        elif data == "adm_reviews":
+            reviews = get_all_reviews()
+            if not reviews:
+                text = "⭐ *ОТЗЫВЫ*\n\nПока отзывов нет."
+            else:
+                text = "⭐ *ПОСЛЕДНИЕ ОТЗЫВЫ:*\n\n"
+                for r in reviews:
+                    uname, item_name, review_text, date = r
+                    un = f"@{uname}" if uname else "аноним"
+                    text += f"👤 {un} | {item_name}\n💬 {review_text}\n📅 {date[:16]}\n{'—'*18}\n"
+            bot.edit_message_text(
+                text, chat_id, msg_id,
+                reply_markup=types.InlineKeyboardMarkup().add(
+                    types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_back")
+                ),
+                parse_mode="Markdown"
+            )
+
+        elif data == "adm_giveaway":
+            msg = bot.send_message(
+                chat_id,
+                "🎉 *СОЗДАНИЕ РОЗЫГРЫША*\n\nНапиши описание приза:",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, process_giveaway_step1)
+
+        elif data == "adm_cancel_giveaway":
+            active = get_active_giveaways()
+            if not active:
+                bot.answer_callback_query(call.id, "Нет активных розыгрышей.", show_alert=True)
+                return
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            for giv in active:
+                gid, text, end_time = giv
+                label = text[:30] + "..." if len(text) > 30 else text
+                kb.add(types.InlineKeyboardButton(
+                    f"❌ {label} (до {end_time[:16]})",
+                    callback_data=f"adm_do_cancel_giveaway_{gid}"
+                ))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_back"))
+            bot.edit_message_text(
+                "❌ *ОТМЕНА РОЗЫГРЫША*\n\nВыбери розыгрыш для отмены:",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data.startswith("adm_do_cancel_giveaway_"):
+            gid = int(data.replace("adm_do_cancel_giveaway_", ""))
+            cancel_giveaway(gid)
+            bot.answer_callback_query(call.id, f"✅ Розыгрыш #{gid} отменён.", show_alert=True)
+            bot.edit_message_text(
+                f"❌ Розыгрыш *#{gid}* отменён.\n\n🔧 *АДМИН ПАНЕЛЬ*",
+                chat_id, msg_id, reply_markup=admin_menu(), parse_mode="Markdown"
+            )
+
+        elif data == "adm_ban_by_id":
+            msg = bot.send_message(
+                chat_id,
+                "🚫 *БАН / РАЗБАН ПО ID*\n\nОтправь Telegram ID пользователя:",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, process_ban_by_id_step1)
+
+        elif data.startswith("adm_do_ban_"):
+            target_uid = int(data.replace("adm_do_ban_", ""))
+            ban_user(target_uid)
+            try:
+                bot.send_message(target_uid, "🚫 Вы заблокированы в RAVONX MARKET за нарушение правил.")
+            except Exception:
+                pass
+            bot.answer_callback_query(call.id, f"✅ Пользователь {target_uid} забанен.", show_alert=True)
+            bot.edit_message_text(
+                f"🚫 Пользователь `{target_uid}` *ЗАБАНЕН*.\n\n🔧 *АДМИН ПАНЕЛЬ*",
+                chat_id, msg_id, reply_markup=admin_menu(), parse_mode="Markdown"
+            )
+
+        elif data.startswith("adm_do_unban_"):
+            target_uid = int(data.replace("adm_do_unban_", ""))
+            unban_user(target_uid)
+            try:
+                bot.send_message(target_uid, "✅ Вы разблокированы в RAVONX MARKET.")
+            except Exception:
+                pass
+            bot.answer_callback_query(call.id, f"✅ Пользователь {target_uid} разбанен.", show_alert=True)
+            bot.edit_message_text(
+                f"✅ Пользователь `{target_uid}` *РАЗБАНЕН*.\n\n🔧 *АДМИН ПАНЕЛЬ*",
+                chat_id, msg_id, reply_markup=admin_menu(), parse_mode="Markdown"
+            )
+
+        elif data == "adm_give_role":
+            msg = bot.send_message(
+                chat_id,
+                "💎 *ВЫДАТЬ РОЛЬ ПОЛЬЗОВАТЕЛЮ*\n\nОтправь Telegram ID пользователя:",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, process_give_role_step1)
+
+        elif data.startswith("adm_setrole_"):
+            # adm_setrole_USERID_ROLE
+            parts = data.replace("adm_setrole_", "").rsplit("_", 1)
+            target_uid = int(parts[0])
+            role_key = parts[1]
+            role_names = {
+                'vip': '💎 VIP',
+                'premium': '🚀 PREMIUM',
+                'elite': '👑 ELITE',
+                'none': '❌ Снять роль'
+            }
+            set_premium_role(target_uid, role_key if role_key != 'none' else None)
+            role_display = role_names.get(role_key, role_key)
+            try:
+                bot.send_message(
+                    target_uid,
+                    f"🎉 *RAVONX MARKET*\n\nАдминистратор выдал тебе роль: *{role_display}*\nПоздравляем! 🔥",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+            bot.answer_callback_query(call.id, f"✅ Роль {role_display} выдана пользователю {target_uid}.", show_alert=True)
+            bot.edit_message_text(
+                f"✅ Пользователю `{target_uid}` выдана роль *{role_display}*.\n\n🔧 *АДМИН ПАНЕЛЬ*",
+                chat_id, msg_id, reply_markup=admin_menu(), parse_mode="Markdown"
+            )
+
+        elif data == "adm_products":
+            products = get_products()
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            for key, info in products.items():
+                kb.add(types.InlineKeyboardButton(
+                    f"{info['name']} — {info['price']} KZT",
+                    callback_data=f"adm_editproduct_{key}"
+                ))
+            kb.add(types.InlineKeyboardButton("🔀 Изменить порядок товаров", callback_data="adm_reorder_products"))
+            kb.add(types.InlineKeyboardButton("➕ Добавить товар", callback_data="adm_addproduct"))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_back"))
+            bot.edit_message_text(
+                "🛍 *СПИСОК ТОВАРОВ*\n\nВыбери товар для редактирования:",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data == "adm_reorder_products":
+            products_list = get_products_list()
+            kb = types.InlineKeyboardMarkup()
+            for i, (key, name, price, so) in enumerate(products_list):
+                up_btn = types.InlineKeyboardButton("⬆️", callback_data=f"adm_prod_up_{key}") if i > 0 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                name_btn = types.InlineKeyboardButton(f"📦 {name}", callback_data="adm_noop")
+                down_btn = types.InlineKeyboardButton("⬇️", callback_data=f"adm_prod_down_{key}") if i < len(products_list) - 1 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                kb.row(up_btn, name_btn, down_btn)
+            kb.add(types.InlineKeyboardButton("✅ Готово", callback_data="adm_products"))
+            bot.edit_message_text(
+                "🔀 *ПОРЯДОК ТОВАРОВ*\n\nНажми ⬆️ или ⬇️ рядом с товаром чтобы переместить его:",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data.startswith("adm_prod_up_"):
+            key = data.replace("adm_prod_up_", "")
+            products_list = get_products_list()
+            keys = [p[0] for p in products_list]
+            idx = keys.index(key) if key in keys else -1
+            if idx > 0:
+                swap_product_order(keys[idx], keys[idx - 1])
+            products_list = get_products_list()
+            kb = types.InlineKeyboardMarkup()
+            for i, (k, name, price, so) in enumerate(products_list):
+                up_btn = types.InlineKeyboardButton("⬆️", callback_data=f"adm_prod_up_{k}") if i > 0 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                name_btn = types.InlineKeyboardButton(f"📦 {name}", callback_data="adm_noop")
+                down_btn = types.InlineKeyboardButton("⬇️", callback_data=f"adm_prod_down_{k}") if i < len(products_list) - 1 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                kb.row(up_btn, name_btn, down_btn)
+            kb.add(types.InlineKeyboardButton("✅ Готово", callback_data="adm_products"))
+            bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=kb)
+            bot.answer_callback_query(call.id, "⬆️ Перемещено вверх")
+
+        elif data.startswith("adm_prod_down_"):
+            key = data.replace("adm_prod_down_", "")
+            products_list = get_products_list()
+            keys = [p[0] for p in products_list]
+            idx = keys.index(key) if key in keys else -1
+            if idx >= 0 and idx < len(keys) - 1:
+                swap_product_order(keys[idx], keys[idx + 1])
+            products_list = get_products_list()
+            kb = types.InlineKeyboardMarkup()
+            for i, (k, name, price, so) in enumerate(products_list):
+                up_btn = types.InlineKeyboardButton("⬆️", callback_data=f"adm_prod_up_{k}") if i > 0 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                name_btn = types.InlineKeyboardButton(f"📦 {name}", callback_data="adm_noop")
+                down_btn = types.InlineKeyboardButton("⬇️", callback_data=f"adm_prod_down_{k}") if i < len(products_list) - 1 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                kb.row(up_btn, name_btn, down_btn)
+            kb.add(types.InlineKeyboardButton("✅ Готово", callback_data="adm_products"))
+            bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=kb)
+            bot.answer_callback_query(call.id, "⬇️ Перемещено вниз")
+
+        elif data == "adm_noop":
+            bot.answer_callback_query(call.id)
+
+        elif data.startswith("adm_editproduct_"):
+            key = data.replace("adm_editproduct_", "")
+            product = get_product(key)
+            if not product:
+                bot.answer_callback_query(call.id, "Товар не найден")
+                return
+            durations = get_product_durations(key)
+            dur_info = f"\n📦 Вариантов: *{len(durations)}*" if durations else "\n📦 Вариантов нет (покупатель видит базовую цену)"
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(
+                types.InlineKeyboardButton("✏️ Изменить название товара", callback_data=f"adm_editfield_name_{key}"),
+                types.InlineKeyboardButton("💰 Изменить базовую цену", callback_data=f"adm_editfield_price_{key}"),
+                types.InlineKeyboardButton("📦 Управление вариантами (подтоварами)", callback_data=f"adm_durations_{key}"),
+                types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_products")
+            )
+            bot.edit_message_text(
+                f"🛍 *{product['name']}*\n💰 Базовая цена: {product['price']} KZT{dur_info}\n\nЧто изменить?",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data.startswith("adm_durations_"):
+            key = data.replace("adm_durations_", "")
+            product = get_product(key)
+            durations = get_product_durations(key)
+            kb = types.InlineKeyboardMarkup()
+            for i, (dur_id, label, price) in enumerate(durations):
+                up_btn = types.InlineKeyboardButton("⬆️", callback_data=f"adm_dur_up_{dur_id}") if i > 0 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                name_btn = types.InlineKeyboardButton(f"📦 {label} — {price} KZT", callback_data=f"adm_editdur_{dur_id}")
+                down_btn = types.InlineKeyboardButton("⬇️", callback_data=f"adm_dur_down_{dur_id}") if i < len(durations) - 1 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                kb.row(up_btn, name_btn, down_btn)
+            kb.add(types.InlineKeyboardButton("➕ Добавить вариант (подтовар)", callback_data=f"adm_adddur_{key}"))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data=f"adm_editproduct_{key}"))
+            pname = product['name'] if product else key
+            rows_status = f"*{len(durations)} вар.*" if durations else "*нет вариантов* — покупатель видит базовую цену"
+            bot.edit_message_text(
+                f"📦 *ВАРИАНТЫ (ПОДТОВАРЫ) — {pname}*\n\n"
+                f"Вариант — это подтовар внутри товара.\n"
+                f"У каждого варианта своё название и цена.\n"
+                f"Нажми ⬆️/⬇️ чтобы поменять порядок.\n"
+                f"Нажми на название варианта чтобы редактировать.\n"
+                f"Пример: `DRIP CLIENT #1 | 800`, `DRIP CLIENT #2 | 1500`\n\n"
+                f"Всего вариантов: {rows_status}",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data.startswith("adm_dur_up_"):
+            dur_id = int(data.replace("adm_dur_up_", ""))
+            dur = get_duration_by_id(dur_id)
+            if not dur:
+                bot.answer_callback_query(call.id, "Вариант не найден")
+                return
+            product_key = dur[1]
+            durations = get_product_durations(product_key)
+            ids = [d[0] for d in durations]
+            idx = ids.index(dur_id) if dur_id in ids else -1
+            if idx > 0:
+                swap_duration_order(ids[idx], ids[idx - 1])
+            durations = get_product_durations(product_key)
+            product = get_product(product_key)
+            pname = product['name'] if product else product_key
+            kb = types.InlineKeyboardMarkup()
+            for i, (d_id, label, price) in enumerate(durations):
+                up_btn = types.InlineKeyboardButton("⬆️", callback_data=f"adm_dur_up_{d_id}") if i > 0 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                name_btn = types.InlineKeyboardButton(f"📦 {label} — {price} KZT", callback_data=f"adm_editdur_{d_id}")
+                down_btn = types.InlineKeyboardButton("⬇️", callback_data=f"adm_dur_down_{d_id}") if i < len(durations) - 1 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                kb.row(up_btn, name_btn, down_btn)
+            kb.add(types.InlineKeyboardButton("➕ Добавить вариант (подтовар)", callback_data=f"adm_adddur_{product_key}"))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data=f"adm_editproduct_{product_key}"))
+            rows_status = f"*{len(durations)} вар.*" if durations else "*нет вариантов*"
+            bot.edit_message_text(
+                f"📦 *ВАРИАНТЫ (ПОДТОВАРЫ) — {pname}*\n\n"
+                f"Нажми ⬆️/⬇️ чтобы поменять порядок.\n"
+                f"Нажми на название варианта чтобы редактировать.\n\n"
+                f"Всего вариантов: {rows_status}",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+            bot.answer_callback_query(call.id, "⬆️ Перемещено вверх")
+
+        elif data.startswith("adm_dur_down_"):
+            dur_id = int(data.replace("adm_dur_down_", ""))
+            dur = get_duration_by_id(dur_id)
+            if not dur:
+                bot.answer_callback_query(call.id, "Вариант не найден")
+                return
+            product_key = dur[1]
+            durations = get_product_durations(product_key)
+            ids = [d[0] for d in durations]
+            idx = ids.index(dur_id) if dur_id in ids else -1
+            if idx >= 0 and idx < len(ids) - 1:
+                swap_duration_order(ids[idx], ids[idx + 1])
+            durations = get_product_durations(product_key)
+            product = get_product(product_key)
+            pname = product['name'] if product else product_key
+            kb = types.InlineKeyboardMarkup()
+            for i, (d_id, label, price) in enumerate(durations):
+                up_btn = types.InlineKeyboardButton("⬆️", callback_data=f"adm_dur_up_{d_id}") if i > 0 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                name_btn = types.InlineKeyboardButton(f"📦 {label} — {price} KZT", callback_data=f"adm_editdur_{d_id}")
+                down_btn = types.InlineKeyboardButton("⬇️", callback_data=f"adm_dur_down_{d_id}") if i < len(durations) - 1 else types.InlineKeyboardButton("·", callback_data="adm_noop")
+                kb.row(up_btn, name_btn, down_btn)
+            kb.add(types.InlineKeyboardButton("➕ Добавить вариант (подтовар)", callback_data=f"adm_adddur_{product_key}"))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data=f"adm_editproduct_{product_key}"))
+            rows_status = f"*{len(durations)} вар.*" if durations else "*нет вариантов*"
+            bot.edit_message_text(
+                f"📦 *ВАРИАНТЫ (ПОДТОВАРЫ) — {pname}*\n\n"
+                f"Нажми ⬆️/⬇️ чтобы поменять порядок.\n"
+                f"Нажми на название варианта чтобы редактировать.\n\n"
+                f"Всего вариантов: {rows_status}",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+            bot.answer_callback_query(call.id, "⬇️ Перемещено вниз")
+
+        elif data.startswith("adm_adddur_"):
+            key = data.replace("adm_adddur_", "")
+            product = get_product(key)
+            pname = product['name'] if product else key
+            pending_duration_edit[ADMIN_ID] = {'key': key, 'action': 'add'}
+            msg = bot.send_message(
+                chat_id,
+                f"➕ *Новый вариант для: {pname}*\n\n"
+                f"Отправь в формате:\n`название | цена`\n\n"
+                f"Примеры:\n`DRIP CLIENT #1 | 800`\n`DRIP CLIENT #2 | 1500`\n`DRIP CLIENT #3 | 2500`",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, process_add_duration)
+
+        elif data.startswith("adm_editdur_label_"):
+            dur_id = int(data.replace("adm_editdur_label_", ""))
+            dur = get_duration_by_id(dur_id)
+            if not dur:
+                return
+            pending_duration_edit[ADMIN_ID] = {'dur_id': dur_id, 'action': 'label', 'key': dur[1]}
+            msg = bot.send_message(chat_id, "✏️ Введи новое *название* подтовара:", parse_mode="Markdown")
+            bot.register_next_step_handler(msg, process_edit_duration)
+
+        elif data.startswith("adm_editdur_price_"):
+            dur_id = int(data.replace("adm_editdur_price_", ""))
+            dur = get_duration_by_id(dur_id)
+            if not dur:
+                return
+            pending_duration_edit[ADMIN_ID] = {'dur_id': dur_id, 'action': 'price', 'key': dur[1]}
+            msg = bot.send_message(chat_id, "💰 Введи новую *цену* (только цифры):", parse_mode="Markdown")
+            bot.register_next_step_handler(msg, process_edit_duration)
+
+        elif data.startswith("adm_editdur_both_"):
+            dur_id = int(data.replace("adm_editdur_both_", ""))
+            dur = get_duration_by_id(dur_id)
+            if not dur:
+                return
+            pending_duration_edit[ADMIN_ID] = {'dur_id': dur_id, 'action': 'both', 'key': dur[1]}
+            msg = bot.send_message(
+                chat_id,
+                "📝 Введи новое *название и цену* в формате:\n`название | цена`\n\nПример: `PRO версия | 1500`",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, process_edit_duration)
+
+        elif data.startswith("adm_editdur_"):
+            dur_id = int(data.replace("adm_editdur_", ""))
+            dur = get_duration_by_id(dur_id)
+            if not dur:
+                bot.answer_callback_query(call.id, "Строка не найдена")
+                return
+            _, product_key, label, price = dur
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(
+                types.InlineKeyboardButton("✏️ Изменить название подтовара", callback_data=f"adm_editdur_label_{dur_id}"),
+                types.InlineKeyboardButton("💰 Изменить цену подтовара", callback_data=f"adm_editdur_price_{dur_id}"),
+                types.InlineKeyboardButton("📝 Изменить название и цену", callback_data=f"adm_editdur_both_{dur_id}"),
+                types.InlineKeyboardButton("🗑 Удалить строку", callback_data=f"adm_deldur_{dur_id}"),
+                types.InlineKeyboardButton("⬅️ НАЗАД", callback_data=f"adm_durations_{product_key}")
+            )
+            bot.edit_message_text(
+                f"📦 *Подтовар: {label}*\n💰 Цена: {price} KZT\n\nЧто изменить?",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data.startswith("adm_deldur_"):
+            dur_id = int(data.replace("adm_deldur_", ""))
+            dur = get_duration_by_id(dur_id)
+            if not dur:
+                bot.answer_callback_query(call.id, "Строка не найдена")
+                return
+            product_key = dur[1]
+            delete_product_duration(dur_id)
+            bot.answer_callback_query(call.id, "✅ Строка удалена.", show_alert=True)
+            durations = get_product_durations(product_key)
+            product = get_product(product_key)
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            for d_id, d_label, d_price in durations:
+                kb.add(types.InlineKeyboardButton(
+                    f"📦 {d_label} — {d_price} KZT",
+                    callback_data=f"adm_editdur_{d_id}"
+                ))
+            kb.add(types.InlineKeyboardButton("➕ Добавить строку (подтовар)", callback_data=f"adm_adddur_{product_key}"))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data=f"adm_editproduct_{product_key}"))
+            pname = product['name'] if product else product_key
+            bot.edit_message_text(
+                f"📋 *СТРОКИ (ПОДТОВАРЫ) — {pname}*\n\nВсего строк: *{len(durations)}*",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data.startswith("adm_editfield_name_"):
+            key = data.replace("adm_editfield_name_", "")
+            pending_product_edit[ADMIN_ID] = {'key': key, 'field': 'name'}
+            msg = bot.send_message(chat_id, f"✏️ Введи новое *название* для товара `{key}`:", parse_mode="Markdown")
+            bot.register_next_step_handler(msg, process_product_edit)
+
+        elif data.startswith("adm_editfield_price_"):
+            key = data.replace("adm_editfield_price_", "")
+            pending_product_edit[ADMIN_ID] = {'key': key, 'field': 'price'}
+            msg = bot.send_message(chat_id, f"💰 Введи новую *цену* (только цифры) для товара `{key}`:", parse_mode="Markdown")
+            bot.register_next_step_handler(msg, process_product_edit)
+
+        elif data == "adm_addproduct":
+            pending_product_edit[ADMIN_ID] = {'field': 'new'}
+            msg = bot.send_message(
+                chat_id,
+                "➕ *Новый товар*\n\nОтправь в формате:\n`ключ | Название | цена`\n\nПример:\n`soft4 | 🛠 DRIP CLIENT V3 | 4000`",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, process_new_product)
+
+        elif data == "adm_back":
+            count = get_users_count()
+            total_orders = get_total_orders()
+            bot.edit_message_text(
+                f"🔧 *АДМИН ПАНЕЛЬ*\n\n👥 Пользователей: *{count}*\n🛒 Заказов: *{total_orders}*",
+                chat_id, msg_id, reply_markup=admin_menu(), parse_mode="Markdown"
+            )
+
+        elif data == "adm_maintenance_toggle":
+            maintenance_mode = not maintenance_mode
+            users = get_all_users()
+            if maintenance_mode:
+                notify_text = (
+                    "🔧 *ТЕХНИЧЕСКИЕ РАБОТЫ*\n\n"
+                    "Бот временно недоступен — проводятся технические работы.\n"
+                    "Все активные заявки будут обработаны позже.\n\n"
+                    "Приносим извинения за неудобства!"
+                )
+                status_text = "🔴 Технические работы *ВКЛЮЧЕНЫ*"
+            else:
+                notify_text = (
+                    "✅ *БОТ СНОВА РАБОТАЕТ!*\n\n"
+                    "Технические работы завершены.\n"
+                    "RAVONX MARKET снова доступен!"
+                )
+                status_text = "✅ Технические работы *ВЫКЛЮЧЕНЫ*"
+            sent = 0
+            for u in users:
+                if u[7]:  # is_banned
+                    continue
+                if u[0] == ADMIN_ID:
+                    continue
+                try:
+                    bot.send_message(u[0], notify_text, parse_mode="Markdown")
+                    sent += 1
+                except Exception:
+                    pass
+            count = get_users_count()
+            total_orders = get_total_orders()
+            bot.edit_message_text(
+                f"🔧 *АДМИН ПАНЕЛЬ*\n\n{status_text}\n📢 Уведомлено: *{sent}* пользователей\n\n"
+                f"👥 Пользователей: *{count}*\n🛒 Заказов: *{total_orders}*",
+                chat_id, msg_id, reply_markup=admin_menu(), parse_mode="Markdown"
+            )
+
+        elif data == "adm_ff_menu":
+            total, avail = get_ff_accounts_count()
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(
+                types.InlineKeyboardButton("➕ Добавить аккаунт", callback_data="adm_ff_add"),
+                types.InlineKeyboardButton("📋 Список аккаунтов", callback_data="adm_ff_list"),
+                types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_back")
+            )
+            bot.edit_message_text(
+                f"🎮 *АККАУНТЫ FREE FIRE*\n\n📦 Всего: *{total}*\n✅ Доступно: *{avail}*",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+        elif data == "adm_ff_add":
+            msg = bot.send_message(
+                chat_id,
+                "➕ *Добавление аккаунта FF*\n\nФормат: `логин пароль описание`",
+                parse_mode="Markdown"
+            )
+            bot.register_next_step_handler(msg, process_ff_step1_credentials)
+
+        elif data == "adm_ff_list":
+            accounts = get_available_ff_accounts()
+            if not accounts:
+                text = "🎮 *Аккаунты FF*\n\nПока нет доступных."
+            else:
+                text = "🎮 *ДОСТУПНЫЕ АККАУНТЫ FF:*\n\n"
+                for acc in accounts:
+                    acc_id, login, desc, price, currency = acc
+                    text += f"🆔 #{acc_id} | `{login}` | {price} {currency}"
+                    if desc:
+                        text += f"\n📝 {desc}"
+                    text += "\n"
+            bot.edit_message_text(
+                text, chat_id, msg_id,
+                reply_markup=types.InlineKeyboardMarkup().add(
+                    types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="adm_ff_menu")
+                ),
+                parse_mode="Markdown"
+            )
+
+        elif data == "ff_currency_kzt":
+            if ADMIN_ID not in pending_ff_accounts:
+                bot.send_message(chat_id, "❌ Сессия устарела.")
+                return
+            pending_ff_accounts[ADMIN_ID]['currency'] = 'KZT'
+            msg = bot.send_message(chat_id, "💰 Введи цену (только цифры):", parse_mode="Markdown")
+            bot.register_next_step_handler(msg, process_ff_step2_price)
+
+        elif data == "ff_currency_none":
+            bot.answer_callback_query(call.id, "⏳ Недоступно", show_alert=True)
+
+        elif data.startswith("adm_ok_"):
+            target_uid = int(data.split("_")[2])
+            try:
+                bot.edit_message_text(
+                    call.message.text + "\n\n✅ *ПРИНЯТО*",
+                    chat_id, msg_id, parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+            msg = bot.send_message(chat_id, "📦 Отправь товар (ссылку или файл) для юзера:")
+            bot.register_next_step_handler(msg, send_product_to_user, target_uid)
+
+        elif data.startswith("adm_no_"):
+            target_uid = int(data.split("_")[2])
+            pending_orders.pop(target_uid, None)
+            try:
+                bot.edit_message_text(
+                    call.message.text + "\n\n❌ *ОТКЛОНЕНО*",
+                    chat_id, msg_id, parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+            bot.send_message(target_uid, "❌ *Оплата не подтверждена.* Свяжитесь с поддержкой.", parse_mode="Markdown")
+
+        elif data.startswith("adm_ban_"):
+            target_uid = int(data.split("_")[2])
+            ban_user(target_uid)
+            try:
+                bot.edit_message_text(
+                    call.message.text + "\n\n🚫 *ЗАБАНЕН*",
+                    chat_id, msg_id, parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+            bot.send_message(target_uid, "🚫 Вы заблокированы в RAVONX MARKET за нарушение правил.")
+            bot.answer_callback_query(call.id, f"Пользователь {target_uid} забанен.", show_alert=True)
+
+        return
+
+    # --------- РОЗЫГРЫШ (любой пользователь) ---------
+    if data.startswith("giveaway_join_"):
+        if is_user_banned(user_id):
+            bot.answer_callback_query(call.id, "🚫 Вы заблокированы.", show_alert=True)
+            return
+        gid = int(data.replace("giveaway_join_", ""))
+        joined = join_giveaway(gid, user_id)
+        if joined:
+            conn = sqlite3.connect('bot_data.db')
+            c = conn.cursor()
+            cnt = c.execute('SELECT COUNT(*) FROM giveaway_participants WHERE giveaway_id=?', (gid,)).fetchone()[0]
+            conn.close()
+            bot.answer_callback_query(call.id, f"✅ Ты участвуешь! Всего: {cnt}", show_alert=True)
+        else:
+            bot.answer_callback_query(call.id, "Ты уже участвуешь!", show_alert=True)
+        return
+
+    # --------- КЛИЕНТСКИЕ КНОПКИ ---------
+
+    if data == "to_main":
+        bot.edit_message_text("🛑 *RAVONX MARKET*", chat_id, msg_id, reply_markup=main_menu(), parse_mode="Markdown")
+
+    elif data == "show_rules":
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="to_main"))
+        bot.edit_message_text(RULES_TEXT, chat_id, msg_id, reply_markup=kb, parse_mode="Markdown")
+
+    elif data == "my_profile":
+        orders_cnt = get_user_order_count(user_id)
+        rank = get_user_rank(user_id)
+        top_disc, sub_disc, total_disc, _ = get_discount_breakdown(user_id)
+        ref_count, _ = get_user_referral_info(user_id)
+        ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+        role = get_user_role(user_id, orders_cnt, rank)
+
+        text = f"👤 *МОЙ ПРОФИЛЬ*\n\n"
+        text += f"🎖 Роль: *{role}*\n"
+        text += f"🛒 Покупок: *{orders_cnt}*\n"
+        if rank:
+            text += f"🏆 Место в топе: *#{rank}*\n"
+        text += f"🎁 Скидка: "
+        if total_disc > 0:
+            parts_disc = []
+            if top_disc > 0:
+                parts_disc.append(f"{top_disc}% (топ)")
+            if sub_disc > 0:
+                parts_disc.append(f"{sub_disc}% (подписка)")
+            text += f"*{total_disc}%* ({' + '.join(parts_disc)})\n"
+        else:
+            text += "*нет* _(купи и попади в топ!)_\n"
+        text += f"👥 Рефералов: *{ref_count}*\n"
+        text += f"\n🔗 *Реф. ссылка:*\n`{ref_link}`"
+
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        if has_used_sub_discount(user_id):
+            kb.add(types.InlineKeyboardButton("✅ Скидка за подписку уже использована", callback_data="sub_used"))
+        else:
+            if not has_sub_verified(user_id) and SUBSCRIPTION_CHANNEL_LINK:
+                kb.add(types.InlineKeyboardButton("📢 Подписаться на канал (+1%)", url=SUBSCRIPTION_CHANNEL_LINK))
+            kb.add(types.InlineKeyboardButton("✅ Проверить подписку (скидка 1%)", callback_data="check_sub"))
+        kb.add(
+            types.InlineKeyboardButton("📦 Мои покупки", callback_data="my_purchases"),
+            types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="to_main")
+        )
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb, parse_mode="Markdown")
+
+    elif data == "sub_used":
+        bot.answer_callback_query(
+            call.id,
+            "ℹ️ Ты уже использовал скидку 1% за подписку. Она даётся только один раз.",
+            show_alert=True
+        )
+        return
+
+    elif data == "check_sub":
+        if has_sub_verified(user_id):
+            bot.answer_callback_query(
+                call.id,
+                "✅ Вы уже подписаны.\nСкидка 1% от RAVONX MARKET уже начислена вашему аккаунту.",
+                show_alert=True
+            )
+            return
+        if not SUBSCRIPTION_CHANNEL:
+            bot.answer_callback_query(
+                call.id,
+                "⚠️ Канал для подписки не настроен. Обратитесь к администратору.",
+                show_alert=True
+            )
+            return
+        subscribed, hours_ok, minutes_left = check_sub_eligibility(user_id)
+        if not subscribed:
+            channel_hint = f"\n\n👆 Нажми кнопку «📢 Подписаться на канал» выше и возвращайся!" if SUBSCRIPTION_CHANNEL_LINK else ""
+            bot.answer_callback_query(
+                call.id,
+                f"❌ Ты не подписан на наш канал!\nПодпишись и нажми «Проверить подписку» снова.{channel_hint}",
+                show_alert=True
+            )
+            return
+        if not hours_ok:
+            bot.answer_callback_query(
+                call.id,
+                f"⏳ Ты подписан, но провёл в боте недостаточно времени.\n"
+                f"Нужно ещё ~{minutes_left} мин. (всего 2 часа).",
+                show_alert=True
+            )
+            return
+        mark_sub_verified(user_id)
+        bot.answer_callback_query(
+            call.id,
+            "🎉 Отлично! Сообщение от RAVONX MARKET:\n\n"
+            "✅ Вы подписаны на наш канал!\n"
+            "🎁 Вам начислен бонус +1% скидки на следующую покупку.\n\n"
+            "Спасибо что с нами! 🔥",
+            show_alert=True
+        )
+
+    elif data == "my_purchases":
+        orders = get_user_orders(user_id)
+        if not orders:
+            text = "📦 *МОИ ПОКУПКИ*\n\n_У тебя пока нет покупок._"
+        else:
+            text = f"📦 *МОИ ПОКУПКИ* ({len(orders)} шт.)\n\n"
+            for i, (item_name, price, date) in enumerate(orders, 1):
+                text += f"*{i}.* {item_name}\n"
+                text += f"   💰 {price} KZT | 📅 {date[:10]}\n"
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="to_main"))
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb, parse_mode="Markdown")
+
+    elif data == "cat_mods":
+        products = get_products()
+        top_disc, sub_disc, total_disc, rank = get_discount_breakdown(user_id)
+        header = "🧬 *ВЫБЕРИ СОФТ:*"
+        if total_disc > 0:
+            header += f"\n🎁 Твоя скидка: *{total_disc}%*"
+            if rank:
+                header += f" (топ #{rank}"
+                if sub_disc:
+                    header += " + подписка"
+                header += ")"
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for p_id, p_info in products.items():
+            durations = get_product_durations(p_id)
+            if durations:
+                # Есть варианты — показываем количество вариантов
+                btn_text = f"{p_info['name']} — {len(durations)} вар."
+            else:
+                price = p_info['price']
+                if total_disc > 0:
+                    final = int(price * (1 - total_disc / 100))
+                    btn_text = f"{p_info['name']} — {final} KZT (скидка {total_disc}%)"
+                else:
+                    btn_text = f"{p_info['name']} — {price} KZT"
+            kb.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{p_id}"))
+        kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="to_main"))
+        bot.edit_message_text(header, chat_id, msg_id, reply_markup=kb, parse_mode="Markdown")
+
+    elif data == "cat_accs":
+        accounts = get_available_ff_accounts()
+        if not accounts:
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="to_main"))
+            bot.edit_message_text(
+                "🎮 *АККАУНТЫ FREE FIRE*\n\n⏳ Аккаунтов пока нет!",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+        else:
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            for acc in accounts:
+                acc_id, login, desc, price, currency = acc
+                label = f"🎮 Аккаунт #{acc_id} — {price} {currency}"
+                if desc:
+                    label += f" | {desc}"
+                kb.add(types.InlineKeyboardButton(label, callback_data=f"buyacc_{acc_id}"))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="to_main"))
+            bot.edit_message_text(
+                "🎮 *АККАУНТЫ FREE FIRE*\n\nВыбери аккаунт:",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+    elif data.startswith("buyacc_"):
+        acc_id = int(data.replace("buyacc_", ""))
+        acc = get_ff_account_by_id(acc_id)
+        if not acc:
+            bot.answer_callback_query(call.id, "❌ Аккаунт уже куплен или недоступен.")
+            return
+        _, login, password, desc, price, currency = acc
+        price_text = f"{price} {currency}" if price else "уточните у продавца"
+        desc_text = f"\n📝 {desc}" if desc else ""
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="cat_accs"))
+        bot.edit_message_text(
+            f"🎮 *Аккаунт FF #{acc_id}*{desc_text}\n💰 Цена: *{price_text}*\n\n"
+            f"🕐 *Оплата скоро откроется!*\nСледи за обновлениями.",
+            chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+        )
+
+    elif data == "client_stats":
+        lb = get_leaderboard()
+        my_orders = get_user_order_count(user_id)
+        rank = get_user_rank(user_id)
+        _, _, total_disc, _ = get_discount_breakdown(user_id)
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        text = "📊 *ТОП ПОКУПАТЕЛЕЙ RAVONX*\n\n"
+        if lb:
+            for i, row in enumerate(lb):
+                uid, uname, fname, cnt, total = row
+                name = f"@{uname}" if uname else (fname or f"ID{uid}")
+                medal = medals[i] if i < len(medals) else f"{i+1}."
+                place_disc = 11 - (i + 1)
+                text += f"{medal} {name} — *{cnt}* покупок | -{place_disc}%\n"
+        else:
+            text += "_Пока никто ничего не купил_\n"
+        text += f"\n👤 *Твои покупки:* {my_orders}"
+        if rank:
+            text += f"\n🏆 *Ты на {rank} месте — скидка {total_disc}%!*"
+        else:
+            text += "\n💡 Попади в топ-10 — скидка от 1% до 10%!"
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="to_main"))
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb, parse_mode="Markdown")
+
+    elif data.startswith("buy_"):
+        item_id = data.replace("buy_", "")
+        product = get_product(item_id)
+        if not product:
+            return
+        durations = get_product_durations(item_id)
+        top_disc, sub_disc, total_disc, rank = get_discount_breakdown(user_id)
+
+        if durations:
+            # Показываем варианты (подтовары)
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            disc_note = f"\n🎁 Твоя скидка: *{total_disc}%*" if total_disc > 0 else ""
+            for dur_id, label, price in durations:
+                final_price = int(price * (1 - total_disc / 100)) if total_disc > 0 else price
+                btn = f"🛒 {label} — {final_price} KZT"
+                if total_disc > 0:
+                    btn += f" (скидка {total_disc}%)"
+                kb.add(types.InlineKeyboardButton(btn, callback_data=f"buyopt_{item_id}_{dur_id}"))
+            kb.add(types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="cat_mods"))
+            bot.edit_message_text(
+                f"🛍 *{product['name']}*{disc_note}\n\nВыбери вариант:",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+        else:
+            # Нет сроков — сразу к оплате по базовой цене
+            pending_orders[user_id] = item_id
+            price = product['price']
+            final_price = int(price * (1 - total_disc / 100)) if total_disc > 0 else price
+            price_text = f"*{price} KZT*"
+            if total_disc > 0:
+                breakdown = []
+                if rank and top_disc > 0:
+                    breakdown.append(f"{top_disc}% (ТОП #{rank})")
+                if sub_disc > 0:
+                    breakdown.append(f"{sub_disc}% (подписка)")
+                discount_line = " + ".join(breakdown)
+                price_text = (
+                    f"Цена: {price} KZT\n"
+                    f"🎁 Скидка: {discount_line} = {total_disc}%\n"
+                    f"✅ *Итого к оплате: {final_price} KZT*"
+                )
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(
+                types.InlineKeyboardButton("💳 Оплатить через Kaspi", callback_data=f"pay_kaspi_{item_id}"),
+                types.InlineKeyboardButton("🔜 Второй способ (скоро)", callback_data="pay_coming"),
+                types.InlineKeyboardButton("⬅️ НАЗАД", callback_data="cat_mods"),
+            )
+            bot.edit_message_text(
+                f"🛒 *{product['name']}*\n\n{price_text}\n\n💳 *Выбери способ оплаты:*",
+                chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+            )
+
+    elif data.startswith("buyopt_"):
+        # Пользователь выбрал срок: buyopt_ITEMKEY_DURID
+        parts = data.replace("buyopt_", "").rsplit("_", 1)
+        item_key = parts[0]
+        dur_id = int(parts[1])
+        product = get_product(item_key)
+        dur = get_duration_by_id(dur_id)
+        if not product or not dur:
+            bot.answer_callback_query(call.id, "❌ Ошибка. Попробуй снова.", show_alert=True)
+            return
+        _, _, label, base_price = dur
+        top_disc, sub_disc, total_disc, rank = get_discount_breakdown(user_id)
+        final_price = int(base_price * (1 - total_disc / 100)) if total_disc > 0 else base_price
+        price_text = f"✅ *К оплате: {final_price} KZT*"
+        if total_disc > 0:
+            price_text = (
+                f"Цена: {base_price} KZT\n"
+                f"🎁 Скидка: {total_disc}%\n"
+                f"✅ *Итого: {final_price} KZT*"
+            )
+        pending_orders[user_id] = {
+            'item_id': item_key,
+            'item_name': f"{product['name']} ({label})",
+            'price': final_price,
+            'sub_disc_applied': sub_disc > 0,
+        }
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton("💳 Оплатить через Kaspi", callback_data=f"paydur_kaspi_{dur_id}_{user_id}"),
+            types.InlineKeyboardButton("🔜 Второй способ (скоро)", callback_data="pay_coming"),
+            types.InlineKeyboardButton("⬅️ НАЗАД", callback_data=f"buy_{item_key}"),
+        )
+        bot.edit_message_text(
+            f"🛒 *{product['name']}*\n📦 Вариант: *{label}*\n\n{price_text}\n\n💳 *Выбери способ оплаты:*",
+            chat_id, msg_id, reply_markup=kb, parse_mode="Markdown"
+        )
+
+    elif data == "pay_coming":
+        bot.answer_callback_query(
+            call.id,
+            "🔜 Этот способ оплаты скоро появится! Пока используй Kaspi.",
+            show_alert=True
+        )
+
+    elif data.startswith("paydur_"):
+        # paydur_METHOD_DURID_USERID
+        parts = data.split("_", 3)
+        method = parts[1]
+        dur_id = int(parts[2])
+        target_uid = int(parts[3])
+        dur = get_duration_by_id(dur_id)
+        if not dur or target_uid != user_id:
+            bot.answer_callback_query(call.id, "❌ Ошибка.", show_alert=True)
+            return
+        card = PAY_REQUISITES.get(method, '—')
+        text = (
+            f"💳 *ОПЛАТА ЧЕРЕЗ KASPI*\n\n"
+            f"Переведи нужную сумму на карту:\n\n"
+            f"`{card}`\n\n"
+            f"После оплаты нажми кнопку ниже 👇"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("✅ Я ОПЛАТИЛ", callback_data=f"confirmdur_{dur_id}"))
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb, parse_mode="Markdown")
+
+    elif data.startswith("confirmdur_"):
+        dur_id = int(data.replace("confirmdur_", ""))
+        order_info = pending_orders.get(user_id)
+        if not isinstance(order_info, dict):
+            bot.answer_callback_query(call.id, "❌ Сессия устарела. Начни заново.", show_alert=True)
+            return
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(
+            chat_id,
+            "✍️ Напиши своё *Имя и Фамилию* в Kaspi для проверки чека\n(пример: Иван И.):",
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(msg, process_kaspi_name, 'duration_order')
+
+    elif data.startswith("pay_"):
+        parts = data.split("_", 2)
+        method = parts[1]
+        item_id = parts[2]
+        card = PAY_REQUISITES.get(method, '—')
+        text = (
+            f"💳 *ОПЛАТА ЧЕРЕЗ KASPI*\n\n"
+            f"Переведи нужную сумму на карту:\n\n"
+            f"`{card}`\n\n"
+            f"После оплаты нажми кнопку ниже 👇"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("✅ Я ОПЛАТИЛ", callback_data=f"confirm_{item_id}"))
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb, parse_mode="Markdown")
+
+    elif data.startswith("confirm_"):
+        item_id = data.replace("confirm_", "")
+        pending_orders[user_id] = item_id
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(
+            chat_id,
+            "✍️ Напиши своё *Имя и Фамилию* в Kaspi для проверки чека\n(пример: Иван И.):",
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(msg, process_kaspi_name, item_id)
+
+    elif data == "write_review":
+        msg = bot.send_message(chat_id, "⭐ *Напиши свой отзыв:*", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_review)
+
+# ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
+
+def process_kaspi_name(message, item_id):
+    user_id = message.chat.id
+    if is_user_banned(user_id):
+        return
+    user_name = message.text
+
+    order_info = pending_orders.get(user_id)
+    if item_id == 'duration_order' and isinstance(order_info, dict):
+        # Заказ со сроком
+        item_name = order_info['item_name']
+        price_info = f"{order_info['price']} KZT"
+    elif isinstance(item_id, str) and item_id.startswith("ff_"):
+        acc_id = item_id.replace("ff_", "")
+        item_name = f"Аккаунт FF #{acc_id}"
+        price_info = "см. аккаунт"
+    else:
+        top_disc, sub_disc, total_disc, rank = get_discount_breakdown(user_id)
+        product = get_product(item_id) or {}
+        price = product.get('price', 0)
+        final_price = int(price * (1 - total_disc / 100)) if total_disc > 0 else price
+        item_name = product.get('name', item_id)
+        price_info = f"{final_price} KZT"
+        if total_disc > 0:
+            price_info += f" (скидка {total_disc}%)"
+
+    bot.send_message(user_id, "⏳ *Запрос отправлен.* Ожидайте подтверждения.", parse_mode="Markdown")
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✅ ПРИНЯТЬ", callback_data=f"adm_ok_{user_id}"))
+    kb.add(types.InlineKeyboardButton("❌ ОТКАЗ", callback_data=f"adm_no_{user_id}"))
+    kb.add(types.InlineKeyboardButton("🚫 ЗАБАНИТЬ", callback_data=f"adm_ban_{user_id}"))
+
+    uname = f"@{message.from_user.username}" if message.from_user.username else f"ID:{user_id}"
+    bot.send_message(
+        ADMIN_ID,
+        f"🔔 *НОВЫЙ ЗАКАЗ!*\n\n"
+        f"👤 Юзер: {uname}\n"
+        f"🆔 ID: `{user_id}`\n"
+        f"🛒 Товар: {item_name}\n"
+        f"💰 Сумма: {price_info}\n"
+        f"🏦 Kaspi: {user_name}",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+def send_product_to_user(message, user_id):
+    user_id = int(user_id)
+    item_id = pending_orders.pop(user_id, None)
+
+    if isinstance(item_id, dict):
+        # Заказ со сроком (duration)
+        order = item_id
+        item_name = order['item_name']
+        save_order(user_id, order['item_id'], item_name, order['price'])
+        if order.get('sub_disc_applied'):
+            mark_sub_discount_used(user_id)
+    elif item_id and not item_id.startswith("ff_"):
+        top_disc, sub_disc, total_disc, _ = get_discount_breakdown(user_id)
+        product = get_product(item_id) or {}
+        price = product.get('price', 0)
+        final_price = int(price * (1 - total_disc / 100)) if total_disc > 0 else price
+        item_name = product.get('name', item_id)
+        save_order(user_id, item_id, item_name, final_price)
+        if sub_disc > 0:
+            mark_sub_discount_used(user_id)
+    elif item_id and item_id.startswith("ff_"):
+        acc_id = int(item_id.replace("ff_", ""))
+        mark_ff_account_sold(acc_id, user_id)
+        item_name = f"Аккаунт FF #{acc_id}"
+        save_order(user_id, item_id, item_name, 0)
+    else:
+        item_name = "Товар"
+
+    bot.send_message(user_id, "✅ *ОПЛАТА ПРИНЯТА!* Спасибо за покупку!", parse_mode="Markdown")
+    if message.content_type == 'text':
+        bot.send_message(user_id, message.text)
+    else:
+        bot.copy_message(user_id, ADMIN_ID, message.message_id)
+
+    referrer_id = get_referrer_id_of(user_id)
+    if referrer_id:
+        try:
+            bot.send_message(referrer_id, f"🎉 Твой реферал купил *{item_name}*! 🔥", parse_mode="Markdown")
+        except Exception:
+            pass
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✍️ Оставить отзыв", callback_data="write_review"))
+    kb.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="to_main"))
+    bot.send_message(
+        user_id,
+        f"⭐ *Понравился {item_name}?*\nОставь отзыв — это помогает другим! 🙌",
+        reply_markup=kb, parse_mode="Markdown"
+    )
+
+def process_review(message):
+    user_id = message.from_user.id
+    review_text = message.text
+    username = message.from_user.username or message.from_user.first_name or "аноним"
+    orders = get_user_orders(user_id)
+    item_name = orders[0][0] if orders else "Товар"
+    save_review(user_id, username, item_name, review_text)
+    uname = f"@{username}" if message.from_user.username else username
+    review_msg = f"⭐ *НОВЫЙ ОТЗЫВ!*\n\n👤 {uname}\n🛒 {item_name}\n💬 {review_text}"
+    bot.send_message(ADMIN_ID, review_msg, parse_mode="Markdown")
+    if REVIEWS_CHANNEL:
+        try:
+            bot.send_message(REVIEWS_CHANNEL, review_msg, parse_mode="Markdown")
+        except Exception:
+            pass
+    bot.send_message(
+        user_id,
+        "✅ *Спасибо за отзыв!* 🙌\n\nВозвращаю тебя в главное меню:",
+        reply_markup=main_menu(),
+        parse_mode="Markdown"
+    )
+
+def process_ff_step1_credentials(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.strip().split(None, 2)
+    if len(parts) < 2:
+        bot.send_message(ADMIN_ID, "❌ Нужно: `логин пароль [описание]`", parse_mode="Markdown")
+        return
+    login, password = parts[0], parts[1]
+    description = parts[2] if len(parts) > 2 else ""
+    pending_ff_accounts[ADMIN_ID] = {'login': login, 'password': password, 'description': description}
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("🇰🇿 Тенге (KZT)", callback_data="ff_currency_kzt"),
+        types.InlineKeyboardButton("⏳ Скоро", callback_data="ff_currency_none"),
+    )
+    bot.send_message(ADMIN_ID, "💱 *Выбери валюту:*", reply_markup=kb, parse_mode="Markdown")
+
+def process_ff_step2_price(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not message.text.strip().isdigit():
+        bot.send_message(ADMIN_ID, "❌ Только цифры (например: `1500`)", parse_mode="Markdown")
+        return
+    price = int(message.text.strip())
+    data = pending_ff_accounts.pop(ADMIN_ID, None)
+    if not data:
+        bot.send_message(ADMIN_ID, "❌ Сессия устарела.")
+        return
+    add_ff_account(data['login'], data['password'], data['description'], price, data.get('currency', 'KZT'))
+    total, avail = get_ff_accounts_count()
+    bot.send_message(
+        ADMIN_ID,
+        f"✅ Аккаунт `{data['login']}` добавлен! 💰 {price} {data.get('currency', 'KZT')}\n"
+        f"📦 Всего: {total} | ✅ Доступно: {avail}",
+        parse_mode="Markdown"
+    )
+
+def process_product_edit(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    edit_data = pending_product_edit.pop(ADMIN_ID, None)
+    if not edit_data:
+        bot.send_message(ADMIN_ID, "❌ Сессия устарела.")
+        return
+    key = edit_data['key']
+    field = edit_data['field']
+    if field == 'name':
+        update_product_name(key, message.text.strip())
+        bot.send_message(ADMIN_ID, f"✅ Название товара `{key}` обновлено: *{message.text.strip()}*", parse_mode="Markdown")
+    elif field == 'price':
+        if not message.text.strip().isdigit():
+            bot.send_message(ADMIN_ID, "❌ Только цифры!")
+            return
+        update_product_price(key, int(message.text.strip()))
+        bot.send_message(ADMIN_ID, f"✅ Цена товара `{key}` обновлена: *{message.text.strip()} KZT*", parse_mode="Markdown")
+
+def process_new_product(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    pending_product_edit.pop(ADMIN_ID, None)
+    parts = [p.strip() for p in message.text.split('|')]
+    if len(parts) < 3 or not parts[2].isdigit():
+        bot.send_message(ADMIN_ID, "❌ Формат: `ключ | Название | цена`", parse_mode="Markdown")
+        return
+    key, name, price = parts[0], parts[1], int(parts[2])
+    add_product_to_db(key, name, price)
+    bot.send_message(ADMIN_ID, f"✅ Товар добавлен!\n🔑 Ключ: `{key}`\n📦 {name}\n💰 {price} KZT", parse_mode="Markdown")
+
+def process_giveaway_step1(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.text.strip() == "/cancel":
+        bot.send_message(ADMIN_ID, "❌ Отменено.")
+        return
+    pending_giveaway[ADMIN_ID] = {'text': message.text.strip()}
+    msg = bot.send_message(
+        ADMIN_ID,
+        "⏱ На сколько минут запустить розыгрыш?\n_(например: `60` = 1 час)_",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, process_giveaway_step2)
+
+def process_giveaway_step2(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not message.text.strip().isdigit():
+        bot.send_message(ADMIN_ID, "❌ Только цифры!", parse_mode="Markdown")
+        return
+    minutes = int(message.text.strip())
+    data = pending_giveaway.pop(ADMIN_ID, None)
+    if not data:
+        bot.send_message(ADMIN_ID, "❌ Сессия устарела.")
+        return
+    end_time = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    gid = create_giveaway(data['text'], end_time)
+    users = get_all_users()
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🎉 Участвовать!", callback_data=f"giveaway_join_{gid}"))
+    sent = 0
+    for u in users:
+        if u[7]:  # is_banned
+            continue
+        try:
+            bot.send_message(
+                u[0],
+                f"🎉 *РОЗЫГРЫШ RAVONX MARKET!*\n\n"
+                f"🏆 Приз: {data['text']}\n\n"
+                f"⏱ Завершится через *{minutes} мин.*\nЖми кнопку!",
+                reply_markup=kb, parse_mode="Markdown"
+            )
+            sent += 1
+        except Exception:
+            pass
+    bot.send_message(
+        ADMIN_ID,
+        f"✅ Розыгрыш создан и разослан {sent} пользователям!\n"
+        f"🆔 ID: *{gid}* | ⏱ Завершится: *{end_time}*",
+        parse_mode="Markdown"
+    )
+
+def process_add_duration(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.text.strip() == "/cancel":
+        bot.send_message(ADMIN_ID, "❌ Отменено.")
+        return
+    data = pending_duration_edit.pop(ADMIN_ID, None)
+    if not data:
+        bot.send_message(ADMIN_ID, "❌ Сессия устарела.")
+        return
+    parts = [p.strip() for p in message.text.strip().split("|")]
+    if len(parts) < 2 or not parts[1].isdigit():
+        bot.send_message(
+            ADMIN_ID,
+            "❌ Неверный формат. Нужно:\n`название | цена`\n\nПример: `7 дней | 2300`",
+            parse_mode="Markdown"
+        )
+        return
+    label = parts[0]
+    price = int(parts[1])
+    key = data['key']
+    add_product_duration(key, label, price)
+    product = get_product(key)
+    pname = product['name'] if product else key
+    bot.send_message(
+        ADMIN_ID,
+        f"✅ Вариант (строка) добавлен!\n\n🛍 Товар: *{pname}*\n📦 Вариант: *{label}*\n💰 Цена: *{price} KZT*",
+        parse_mode="Markdown"
+    )
+
+def process_edit_duration(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.text.strip() == "/cancel":
+        bot.send_message(ADMIN_ID, "❌ Отменено.")
+        return
+    data = pending_duration_edit.pop(ADMIN_ID, None)
+    if not data:
+        bot.send_message(ADMIN_ID, "❌ Сессия устарела.")
+        return
+    dur_id = data['dur_id']
+    action = data['action']
+    raw = message.text.strip()
+    if action == 'price':
+        if not raw.isdigit():
+            bot.send_message(ADMIN_ID, "❌ Только цифры!")
+            return
+        update_duration_price(dur_id, int(raw))
+        bot.send_message(ADMIN_ID, f"✅ Цена подтовара обновлена: *{raw} KZT*", parse_mode="Markdown")
+    elif action == 'label':
+        update_duration_label(dur_id, raw)
+        bot.send_message(ADMIN_ID, f"✅ Название подтовара обновлено: *{raw}*", parse_mode="Markdown")
+    elif action == 'both':
+        parts = [p.strip() for p in raw.split("|")]
+        if len(parts) < 2 or not parts[1].isdigit():
+            bot.send_message(
+                ADMIN_ID,
+                "❌ Неверный формат. Нужно:\n`название | цена`\n\nПример: `PRO версия | 1500`",
+                parse_mode="Markdown"
+            )
+            return
+        new_label = parts[0]
+        new_price = int(parts[1])
+        update_duration_label(dur_id, new_label)
+        update_duration_price(dur_id, new_price)
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ Подтовар обновлён!\n📦 Название: *{new_label}*\n💰 Цена: *{new_price} KZT*",
+            parse_mode="Markdown"
+        )
+
+def process_ban_by_id_step1(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.text.strip() == "/cancel":
+        bot.send_message(ADMIN_ID, "❌ Отменено.")
+        return
+    raw = message.text.strip()
+    if not raw.lstrip('-').isdigit():
+        bot.send_message(ADMIN_ID, "❌ Неверный ID. Введи только цифры.")
+        return
+    target_uid = int(raw)
+    is_banned_now = is_user_banned(target_uid)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("🚫 ЗАБАНИТЬ", callback_data=f"adm_do_ban_{target_uid}"),
+        types.InlineKeyboardButton("✅ РАЗБАНИТЬ", callback_data=f"adm_do_unban_{target_uid}"),
+        types.InlineKeyboardButton("⬅️ Отмена", callback_data="adm_back")
+    )
+    status = "🚫 *ЗАБАНЕН*" if is_banned_now else "✅ *Активен*"
+    bot.send_message(
+        ADMIN_ID,
+        f"👤 Пользователь `{target_uid}`\nСтатус: {status}\n\nВыбери действие:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+def process_give_role_step1(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.text.strip() == "/cancel":
+        bot.send_message(ADMIN_ID, "❌ Отменено.")
+        return
+    raw = message.text.strip()
+    if not raw.lstrip('-').isdigit():
+        bot.send_message(ADMIN_ID, "❌ Неверный ID. Введи только цифры.")
+        return
+    target_uid = int(raw)
+    current_role = get_premium_role(target_uid)
+    current_display = {
+        'vip': '💎 VIP', 'premium': '🚀 PREMIUM', 'elite': '👑 ELITE'
+    }.get(current_role, '— нет —')
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("💎 VIP", callback_data=f"adm_setrole_{target_uid}_vip"),
+        types.InlineKeyboardButton("🚀 PREMIUM", callback_data=f"adm_setrole_{target_uid}_premium"),
+        types.InlineKeyboardButton("👑 ELITE", callback_data=f"adm_setrole_{target_uid}_elite"),
+        types.InlineKeyboardButton("❌ Снять роль", callback_data=f"adm_setrole_{target_uid}_none"),
+        types.InlineKeyboardButton("⬅️ Отмена", callback_data="adm_back"),
+    )
+    bot.send_message(
+        ADMIN_ID,
+        f"👤 Пользователь `{target_uid}`\n"
+        f"💎 Текущая роль: *{current_display}*\n\n"
+        f"Выбери роль для выдачи:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+def do_broadcast(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.text and message.text.strip() == "/cancel":
+        bot.send_message(ADMIN_ID, "❌ Рассылка отменена.")
+        return
+    users = get_all_users()
+    sent = 0
+    failed = 0
+    for u in users:
+        if u[7]:  # is_banned
+            continue
+        try:
+            if message.content_type == 'text':
+                bot.send_message(u[0], f"📢 *Сообщение от Администратора:*\n\n{message.text}", parse_mode="Markdown")
+            elif message.content_type == 'photo':
+                caption = f"📢 *Сообщение от Администратора:*\n\n{message.caption or ''}"
+                bot.send_photo(u[0], message.photo[-1].file_id, caption=caption, parse_mode="Markdown")
+            elif message.content_type == 'video':
+                caption = f"📢 *Сообщение от Администратора:*\n\n{message.caption or ''}"
+                bot.send_video(u[0], message.video.file_id, caption=caption, parse_mode="Markdown")
+            elif message.content_type == 'document':
+                caption = f"📢 *Сообщение от Администратора:*\n\n{message.caption or ''}"
+                bot.send_document(u[0], message.document.file_id, caption=caption, parse_mode="Markdown")
+            else:
+                bot.send_message(u[0], "📢 *Сообщение от Администратора:*", parse_mode="Markdown")
+                bot.copy_message(u[0], ADMIN_ID, message.message_id)
+            sent += 1
+        except Exception:
+            failed += 1
+    bot.send_message(ADMIN_ID, f"📢 Рассылка завершена!\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
+
+# ===================== ЗАПУСК =====================
+import requests as _requests
+
+def force_kick_other_instance():
+    """Принудительно выбивает другой polling-экземпляр через прямой вызов getUpdates."""
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+    for _ in range(3):
+        try:
+            _requests.get(url, params={"timeout": 1, "offset": -1}, timeout=5)
+        except Exception:
+            pass
+        time.sleep(1)
+
+if __name__ == '__main__':
+    init_db()
+    keep_alive()
+    checker_thread = threading.Thread(target=giveaway_checker, daemon=True)
+    checker_thread.start()
+    while True:
+        try:
+            bot.delete_webhook(drop_pending_updates=True)
+            time.sleep(2)
+            force_kick_other_instance()
+            time.sleep(3)
+            try:
+                BOT_USERNAME = bot.get_me().username
+            except Exception:
+                pass
+            bot.polling(none_stop=False, interval=0, timeout=20)
+        except Exception as e:
+            err_str = str(e)
+            print(f"[BOT ERROR] {err_str}")
+            if '409' in err_str:
+                print("[BOT] Конфликт — выбиваем другой экземпляр...")
+                force_kick_other_instance()
+                time.sleep(10)
+            else:
+                time.sleep(5)
