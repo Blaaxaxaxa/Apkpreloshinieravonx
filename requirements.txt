@@ -1,6 +1,0 @@
-pyTelegramBotAPI
-flask
-flask
-pyTelegramBotAPI
-flask
-pyTelegramBotAPI
